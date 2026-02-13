@@ -5,10 +5,9 @@ const MiniCssExtractPlugin = require("mini-css-extract-plugin");
 
 module.exports = {
   entry: {
-    popup: "./src/popup.jsx",
-    content: "./src/content.jsx",
-    background: "./src/background.jsx",
-    "shadow-root": "./src/shadow-root.css",
+    popup: "./src/popup/index.jsx",
+    content: "./src/content/index.jsx",
+    background: "./src/background/index.jsx",
   },
   output: {
     path: path.resolve(__dirname, "dist"),
@@ -27,7 +26,7 @@ module.exports = {
         },
       },
       {
-        test: /\.(png|jpe?g|gif|svg)$/i,
+        test: /\.(png|jpe?g|gif|svg|webp)$/i,
         use: [
           {
             loader: "file-loader",
@@ -62,7 +61,7 @@ module.exports = {
   },
   plugins: [
     new HtmlWebpackPlugin({
-      template: "./src/popup.html",
+      template: "./src/popup/popup.html",
       filename: "popup.html",
       chunks: ["popup"],
     }),
