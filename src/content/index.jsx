@@ -7,46 +7,18 @@ const config = {
     // Protection enabled/disabled state (will be synced with storage)
     enabled: true,
 
-    // Patterns to detect sponsored content
-    sponsoredPatterns: [
-        /\bsponsored\b/i,
-        /\badvertisement\b/i,
-        /\bpromoted\b/i,
-        /\bpartner content\b/i,
-        /\bpaid promotion\b/i,
-        /\bad\s*$/i,
-        /\[ad\]/i,
-        /\(sponsored\)/i,
-        /\bthis is an ad\b/i,  // Word boundary to avoid matching "this is an adjective"
-    ],
+    // NO LONGER USING KEYWORD MATCHING TO PREVENT BROAD BLOCKING
+    sponsoredPatterns: [],
 
-    // CSS selectors that might contain ads
+    // STRICT SELECTORS FOR MARCH 2026 ADS
     adSelectors: [
-        '[data-sponsored]',
-        '[data-ad]',
-        '[data-advertisement]',
-        '[aria-label*="sponsored" i]',
-        '[aria-label*="advertisement" i]',
-        '[class*="sponsored" i]',
-        '[class*="advertisement" i]',
-        '[id*="sponsored" i]',
-        '[id*="advertisement" i]',
-        '.ad-container',
-        '.sponsored-content',
-        '.promotion',
-        '[data-testid*="ad"]',
-        '[data-testid*="sponsored"]',
-        'div[role="complementary"]', // Generic sidebar ads
-        ".sys-ad-container",
+        '[aria-label="Ad options"]',
+        'img[src*="bzrcdn.openai.com"]',
+        '[role="link"].bg-token-bg-tertiary',
+        'h3' // Will be filtered in isElementSponsored for exact text "Sponsored"
     ],
 
-    // Additional attributes to check
-    suspiciousAttributes: [
-        'data-ad',
-        'data-sponsored',
-        'data-promotion',
-        'data-partner',
-    ]
+    suspiciousAttributes: []
 };
 
 // ============================================
@@ -84,83 +56,31 @@ function isElementSponsored(element) {
     }
 
     // ============================================
-    // CRITICAL: Only check assistant messages, not user messages
+    // CRITICAL: Protection for User & Assistant Content
     // ============================================
 
-    // Skip user messages entirely (they have class "user-message-bubble-color")
-    if (element.classList && element.classList.contains('user-message-bubble-color')) {
+    // 1. Never block the input field or its parents
+    if (element.id === 'prompt-textarea' || element.tagName === 'TEXTAREA' || element.closest('#prompt-textarea') || element.closest('form')) {
         return false;
     }
 
-    // Skip if this element is inside a user message
-    if (element.closest && element.closest('.user-message-bubble-color')) {
+    // 2. Never block user messages 
+    if (element.getAttribute('data-message-author-role') === 'user' || element.classList.contains('user-message-bubble-color') || element.closest('.user-message-bubble-color')) {
         return false;
     }
 
-    // Only process assistant messages or specific ad containers
-    // Assistant messages have data-message-author-role="assistant"
-    const isAssistantMessage = element.getAttribute('data-message-author-role') === 'assistant' ||
-        (element.closest && element.closest('[data-message-author-role="assistant"]'));
-
-    const isPotentialAdContainer = config.adSelectors.some(sel => {
-        try { return element.matches(sel); } catch (e) { return false; }
-    });
-
-    if (!isAssistantMessage && !isPotentialAdContainer) {
-        // Continue checking if it matches ad selectors directly, but be careful
-    }
-
-
-    // Check 1: CSS Selectors
-    for (const selector of config.adSelectors) {
-        try {
-            if (element.matches(selector)) {
-                return true;
-            }
-        } catch (e) {
-            // Invalid selector, skip
-        }
-    }
-
-    // Check 2: Suspicious attributes
-    if (hasAttribute(element, config.suspiciousAttributes)) {
-        return true;
-    }
-
-    // Check 3: Text content patterns
+    // 3. STRICT: Detect ONLY specific ad components provided by user
     const text = getElementText(element);
-    if (text && matchesPattern(text, config.sponsoredPatterns)) {
+    
+    const isAdHeader = element.tagName === 'H3' && text === 'Sponsored';
+    const isAdOptions = element.getAttribute('aria-label') === 'Ad options';
+    const isAdImage = element.tagName === 'IMG' && element.src && element.src.includes('bzrcdn.openai.com');
+    const isAdCard = element.getAttribute('role') === 'link' && element.classList.contains('bg-token-bg-tertiary');
+
+    if (isAdHeader || isAdOptions || isAdImage || isAdCard) {
+        // Double check it's not a message bubble itself
+        if (element.hasAttribute('data-message-id')) return false;
         return true;
-    }
-
-    // Check 4: Aria labels
-    const ariaLabel = element.getAttribute('aria-label');
-    if (ariaLabel && matchesPattern(ariaLabel, config.sponsoredPatterns)) {
-        return true;
-    }
-
-    // Check 5: Data attributes
-    const dataAttrs = Array.from(element.attributes)
-        .filter(attr => attr.name.startsWith('data-'))
-        .map(attr => `${attr.name}=${attr.value}`);
-
-    for (const dataAttr of dataAttrs) {
-        if (matchesPattern(dataAttr, config.sponsoredPatterns)) {
-            return true;
-        }
-    }
-
-    // Check 6: Child elements with sponsored indicators (shallow check)
-    // We don't want to traverse too deep or remove parents based on deep children usually,
-    // but for specific known structures it's useful.
-    if (element.children.length > 0 && element.children.length < 5) {
-        const childText = Array.from(element.querySelectorAll('*'))
-            .map(child => getElementText(child))
-            .join(' ');
-
-        if (childText && matchesPattern(childText, config.sponsoredPatterns)) {
-            return true;
-        }
     }
 
     return false;
@@ -173,25 +93,39 @@ function removeAdElement(element) {
         // Mark as processed before removing
         processedElements.add(element);
 
-        // Try to find the parent container (message container)
+        // ============================================
+        // SMART HIDING: Find the ad block container
+        // ============================================
+        
+        // If we found a small anchor (like the Ad options button), 
+        // we want to hide the whole ad box, not just the button.
         let targetElement = element;
+        
+        const isAnchor = element.getAttribute('aria-label') === 'Ad options' || 
+                         element.tagName === 'IMG' || 
+                         element.tagName === 'H3' ||
+                         element.tagName === 'BUTTON';
 
-        // Look for common ChatGPT message containers
-        const messageContainer = element.closest('[data-message-id]') ||
-            element.closest('.group') ||
-            element.closest('[class*="message"]') ||
-            element;
-
-        if (messageContainer && messageContainer !== element) {
-            targetElement = messageContainer;
+        if (isAnchor) {
+            // Find the closest wrapper that usually contains the ad block components
+            // (Typically 1-3 levels up for ChatGPT ads)
+            const wrapper = element.closest('.flex.flex-col') || 
+                            element.closest('[role="link"]') ||
+                            element.closest('.flex.items-center.justify-between') ||
+                            element.parentElement;
+            
+            if (wrapper && !wrapper.hasAttribute('data-message-id')) {
+                targetElement = wrapper;
+            }
         }
 
-        // Hide instead of remove to avoid hydration issues if possible, or just remove
+        // Apply hiding to the target container
         targetElement.style.display = 'none';
-
-        // Also remove from DOM after a moment to clean up? 
-        // Safer to just hide for React apps, but removal works too.
-        // targetElement.remove();
+        targetElement.style.visibility = 'hidden';
+        targetElement.style.height = '0px';
+        targetElement.style.margin = '0px';
+        targetElement.style.padding = '0px';
+        targetElement.style.overflow = 'hidden';
 
         // Increment stats
         chrome.storage.local.get(['blockedAdsCount'], (result) => {
@@ -199,10 +133,6 @@ function removeAdElement(element) {
             const newCount = currentCount + 1;
             chrome.storage.local.set({ blockedAdsCount: newCount });
 
-            // Send message to update badge
-            // We use a simple session count or total? Usually badge is per session/page load or total.
-            // Let's use total for now, or maybe just "1+"?
-            // Actually, badge usually reflects "this page". Let's track a session variable.
             if (!window.sessionBlockedCount) window.sessionBlockedCount = 0;
             window.sessionBlockedCount++;
 
@@ -214,7 +144,7 @@ function removeAdElement(element) {
             } catch (e) { }
         });
 
-        console.log('[ChatGPT AdBlocker] Blocked sponsored content:', targetElement);
+        console.log('[ChatGPT AdBlocker] Blocked ad unit:', targetElement);
         return true;
     } catch (error) {
         console.error(`[ChatGPT AdBlocker] Error removing ad element: ${error.message}`);
@@ -229,35 +159,27 @@ function removeAdElement(element) {
 function scanForAds() {
     // Check if protection is enabled
     if (!config.enabled) {
-        return; // Protection is OFF, don't scan
+        return; 
     }
 
-    // Scan ONLY assistant messages, not user messages
-    // Assistant messages have data-message-author-role="assistant"
-    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+    // NEW LOGIC: Instead of scanning the whole message bubble, 
+    // we scan specifically for known AD components within the page.
+    // This prevents the AI's actual text from being hidden.
 
-    messages.forEach(message => {
-        if (isElementSponsored(message)) {
-            removeAdElement(message);
-        }
-    });
-
-    // Also scan for standalone ad elements based on selectors
     config.adSelectors.forEach(selector => {
         try {
             const adElements = document.querySelectorAll(selector);
             adElements.forEach(element => {
-                if (!processedElements.has(element)) {
-                    // Check if it's really an ad (double check logic inside removes false positives)
-                    // or just trust the selector
-                    if (isElementSponsored(element) || element.matches(selector)) {
-                        removeAdElement(element);
-                    }
+                // Double check it's not user content
+                if (processedElements.has(element)) return;
+                
+                // We use isElementSponsored to verify it's a real ad element
+                // and NOT a user message container
+                if (isElementSponsored(element)) {
+                    removeAdElement(element);
                 }
             });
-        } catch (e) {
-            // Invalid selector
-        }
+        } catch (e) { }
     });
 }
 
@@ -319,26 +241,35 @@ function setupObserver() {
 }
 
 // ============================================
-// CSS Injection
+// CSS Injection & Removal
 // ============================================
 
+const STYLE_ID = 'chatgpt-adblocker-styles';
+
+function removeBlockingCSS() {
+    const style = document.getElementById(STYLE_ID);
+    if (style) {
+        style.remove();
+        console.log('[ChatGPT AdBlocker] Protection disabled: CSS removed.');
+    }
+}
+
 function injectBlockingCSS() {
-    const styleId = 'chatgpt-adblocker-styles';
-    if (document.getElementById(styleId)) return;
+    if (document.getElementById(STYLE_ID)) return;
 
     const style = document.createElement('style');
-    style.id = styleId;
+    style.id = STYLE_ID;
 
     style.textContent = `
-        /* Hide elements with sponsored indicators */
-        [data-sponsored="true"],
-        [data-ad="true"],
-        [data-advertisement="true"],
-        .sponsored-content,
-        .ad-container,
-        .advertisement,
-        [class*="sponsored" i],
-        [class*="advertisement" i] {
+        /* Hide elements with sponsored indicators, but EXCLUDE user content */
+        [data-sponsored="true"]:not(form *),
+        [data-ad="true"]:not(form *),
+        [data-advertisement="true"]:not(form *),
+        .sponsored-content:not([data-message-author-role="user"] *),
+        .ad-container:not(form *),
+        .advertisement:not([data-message-author-role="user"] *),
+        [class*="sponsored" i]:not(form *):not([data-message-author-role="user"] *),
+        [class*="advertisement" i]:not(form *):not([data-message-author-role="user"] *) {
             display: none !important;
             visibility: hidden !important;
             opacity: 0 !important;
@@ -351,6 +282,7 @@ function injectBlockingCSS() {
     `;
 
     document.head.appendChild(style);
+    console.log('[ChatGPT AdBlocker] Protection enabled: CSS injected.');
 }
 
 // ============================================
@@ -358,8 +290,8 @@ function injectBlockingCSS() {
 // ============================================
 
 const init = async () => {
-    // Load setting
-    const result = await chrome.storage.local.get(['adBlockEnabled', 'mutationObserverEnabled']);
+    // Load setting using SYNC storage (to match background/popup)
+    const result = await chrome.storage.sync.get(['adBlockEnabled', 'mutationObserverEnabled']);
     config.enabled = result.adBlockEnabled !== false; // Default true
 
     if (config.enabled) {
@@ -369,6 +301,8 @@ const init = async () => {
         if (result.mutationObserverEnabled !== false) {
             setupObserver();
         }
+    } else {
+        removeBlockingCSS();
     }
 };
 
@@ -378,7 +312,9 @@ const init = async () => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "UPDATE_SETTINGS") {
+        const wasEnabled = config.enabled;
         config.enabled = request.adBlockEnabled;
+        
         if (config.enabled) {
             injectBlockingCSS();
             scanForAds();
@@ -388,8 +324,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 if (observer) observer.disconnect();
             }
         } else {
+            // Extension turned OFF
             if (observer) observer.disconnect();
-            // Optionally remove CSS, but usually okay to leave it
+            removeBlockingCSS();
+            // Refresh counts for the session
+            window.sessionBlockedCount = 0;
         }
     }
 });
