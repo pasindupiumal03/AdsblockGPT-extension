@@ -7,13 +7,30 @@ const DEFAULT_SETTINGS = {
 };
 
 const DEFAULT_RULES = {
-    "version": 1.0,
+    "version": 1.1,
     "css_selectors": [
         "[data-testid='ad-slot']",
+        "[data-testid*='ad-unit']",
+        "[data-testid*='brand']",
         ".sponsored-message",
-        "div[aria-label='Sponsored']"
+        ".ad-card",
+        ".ad-unit",
+        ".brand-identifier",
+        ".ask-chatgpt",
+        ".sponsored-follow-up",
+        "div[aria-label*='Sponsored' i]",
+        "div[aria-label*='Sponsor' i]"
     ],
-    "keywords": ["Sponsored", "Promoted", "Ad", "Advertisement"],
+    "keywords": [
+        "Sponsored", 
+        "Sponsor", 
+        "Promoted", 
+        "Ad", 
+        "Advertisement", 
+        "Ask ChatGPT", 
+        "Follow-up",
+        "Brand"
+    ],
     "text_threshold": 120
 };
 
